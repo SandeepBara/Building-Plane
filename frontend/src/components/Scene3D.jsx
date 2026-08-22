@@ -3,6 +3,7 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { SCALE, toWorld, toPlan, projectPointOnSegment } from '../utils/geometry.js';
+import { OPENING_DEFAULTS as TOOL_DEFAULTS } from '../utils/openings.js';
 
 const ELEMENT_COLORS_3D = {
   door: '#8B4513',
@@ -10,22 +11,34 @@ const ELEMENT_COLORS_3D = {
 };
 
 const SELECTED_COLOR = '#007bff';
-
-const TOOL_DEFAULTS = {
-  door: { height: 210, bottomOffset: 0, width: 90 },
-  window: { height: 120, bottomOffset: 90, width: 110 },
-  vent: { height: 40, bottomOffset: 200, width: 60 },
-};
+// TOOL_DEFAULTS (door/window/vent width/height/bottomOffset) now comes
+// from utils/openings.js, the single shared source used by both the 2D
+// editor and this 3D scene, so an opening placed in either view has the
+// same size and sits in the same vertical band on the wall.
 
 function wallWorldPoints(wall) {
   return { start: toWorld(wall.x1, wall.y1), end: toWorld(wall.x2, wall.y2) };
 }
 
+// Cuts door/window/vent-shaped holes out of a wall and returns the
+// remaining solid wall pieces as { uStart, uEnd, yStart, yEnd } boxes
+// (u = position along the wall 0..1, y = height in world units).
+//
+// This handles any number of openings on the same wall, including ones
+// whose horizontal (u) ranges overlap -- e.g. a window and a vent
+// placed near the same spot on a wall. Rather than cutting each
+// opening independently (which produced duplicated/overlapping wall
+// geometry when two openings shared horizontal space), it slices the
+// wall into vertical "columns" at every opening edge, merges the
+// vertical ranges of whichever openings cover each column, and emits
+// only the solid (non-open) leftover per column.
 function buildWallSegments(wall, openings) {
   const H = (wall.height || 250) * SCALE;
   const { start, end } = wallWorldPoints(wall);
   const wallLength3D = Math.hypot(end.x - start.x, end.z - start.z);
   if (wallLength3D === 0) return [];
+
+  const EPS = 1e-4;
 
   const spans = openings
     .map((o) => {
@@ -34,30 +47,62 @@ function buildWallSegments(wall, openings) {
       const uStart = Math.min(p1.t, p2.t);
       const uEnd = Math.max(p1.t, p2.t);
       if (uEnd - uStart < 0.001) return null;
-      const bottom = (o.bottomOffset || 0) * SCALE;
+      const bottom = Math.max(0, (o.bottomOffset || 0) * SCALE);
       const top = Math.min(bottom + (o.height || 0) * SCALE, H);
+      if (top - bottom < 0.001) return null;
       return { uStart, uEnd, bottom, top };
     })
-    .filter(Boolean)
-    .sort((a, b) => a.uStart - b.uStart);
+    .filter(Boolean);
+
+  if (spans.length === 0) {
+    return [{ uStart: 0, uEnd: 1, yStart: 0, yEnd: H }];
+  }
+
+  // Column breakpoints along the wall, from every opening edge plus
+  // the wall's own start/end.
+  const breakpoints = Array.from(new Set([0, 1, ...spans.flatMap((s) => [s.uStart, s.uEnd])])).sort(
+    (a, b) => a - b
+  );
 
   const segments = [];
-  let cursor = 0;
-  spans.forEach((span) => {
-    if (span.uStart > cursor) {
-      segments.push({ uStart: cursor, uEnd: span.uStart, yStart: 0, yEnd: H });
+
+  for (let i = 0; i < breakpoints.length - 1; i++) {
+    const colStart = breakpoints[i];
+    const colEnd = breakpoints[i + 1];
+    if (colEnd - colStart < EPS) continue;
+    const colMid = (colStart + colEnd) / 2;
+
+    // Openings whose horizontal range fully covers this column.
+    const covering = spans.filter((s) => s.uStart <= colMid && s.uEnd >= colMid);
+
+    // Merge covering openings' vertical ranges into sorted,
+    // non-overlapping intervals (handles a window + vent that share
+    // horizontal space but not vertical space, or that overlap both).
+    const openRanges = covering
+      .map((s) => [s.bottom, s.top])
+      .sort((a, b) => a[0] - b[0])
+      .reduce((merged, [b, t]) => {
+        if (merged.length && b <= merged[merged.length - 1][1] + EPS) {
+          merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], t);
+        } else {
+          merged.push([b, t]);
+        }
+        return merged;
+      }, []);
+
+    // Solid wall = complement of the merged open ranges within [0, H].
+    let cursorY = 0;
+    openRanges.forEach(([b, t]) => {
+      if (b > cursorY + EPS) {
+        segments.push({ uStart: colStart, uEnd: colEnd, yStart: cursorY, yEnd: b });
+      }
+      cursorY = Math.max(cursorY, t);
+    });
+    if (H - cursorY > EPS) {
+      segments.push({ uStart: colStart, uEnd: colEnd, yStart: cursorY, yEnd: H });
     }
-    if (span.bottom > 0.001) {
-      segments.push({ uStart: span.uStart, uEnd: span.uEnd, yStart: 0, yEnd: span.bottom });
-    }
-    if (span.top < H - 0.001) {
-      segments.push({ uStart: span.uStart, uEnd: span.uEnd, yStart: span.top, yEnd: H });
-    }
-    cursor = Math.max(cursor, span.uEnd);
-  });
-  if (cursor < 1) {
-    segments.push({ uStart: cursor, uEnd: 1, yStart: 0, yEnd: H });
   }
+
   return segments;
 }
 

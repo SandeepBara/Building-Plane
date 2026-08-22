@@ -1,6 +1,11 @@
-import React from 'react';
+import React, { useRef } from 'react';
 
-export default function PropertyPanel({ selectedItem, onChange, onDelete }) {
+export default function PropertyPanel({ selectedItem, onChange, onDelete, onDuplicate, onBeginInteraction = () => {} }) {
+  // Tracks whether we've already checkpointed history for the field the
+  // user is currently editing, so a burst of keystrokes/slider drags
+  // collapses into a single undo step instead of one per change.
+  const interactionStartedRef = useRef(false);
+
   if (!selectedItem) {
     return (
       <div style={panelStyle}>
@@ -22,9 +27,21 @@ export default function PropertyPanel({ selectedItem, onChange, onDelete }) {
   );
   const currentAngleDeg = Math.round((currentAngleRad * 180) / Math.PI);
 
+  function beginIfNeeded() {
+    if (!interactionStartedRef.current) {
+      onBeginInteraction();
+      interactionStartedRef.current = true;
+    }
+  }
+
+  function endInteraction() {
+    interactionStartedRef.current = false;
+  }
+
   const handleDimensionChange = (key, val) => {
+    beginIfNeeded();
     const num = parseFloat(val) || 0;
-    onChange({ ...selectedItem, [key]: num });
+    onChange({ ...selectedItem, [key]: num }, { commit: false });
   };
 
   const handleRotate = (angleDegDelta) => {
@@ -36,6 +53,7 @@ export default function PropertyPanel({ selectedItem, onChange, onDelete }) {
     const dx = Math.cos(newAngleRad) * halfLen;
     const dy = Math.sin(newAngleRad) * halfLen;
 
+    // Discrete click -> own undo step (commit defaults to true).
     onChange({
       ...selectedItem,
       x1: cx - dx,
@@ -46,6 +64,7 @@ export default function PropertyPanel({ selectedItem, onChange, onDelete }) {
   };
 
   const handleSetAngle = (targetDeg) => {
+    beginIfNeeded();
     const cx = (selectedItem.x1 + selectedItem.x2) / 2;
     const cy = (selectedItem.y1 + selectedItem.y2) / 2;
     const halfLen = currentLength / 2;
@@ -54,13 +73,16 @@ export default function PropertyPanel({ selectedItem, onChange, onDelete }) {
     const dx = Math.cos(rad) * halfLen;
     const dy = Math.sin(rad) * halfLen;
 
-    onChange({
-      ...selectedItem,
-      x1: cx - dx,
-      y1: cy - dy,
-      x2: cx + dx,
-      y2: cy + dy,
-    });
+    onChange(
+      {
+        ...selectedItem,
+        x1: cx - dx,
+        y1: cy - dy,
+        x2: cx + dx,
+        y2: cy + dy,
+      },
+      { commit: false }
+    );
   };
 
   return (
@@ -83,7 +105,12 @@ export default function PropertyPanel({ selectedItem, onChange, onDelete }) {
               min="-180"
               max="180"
               value={currentAngleDeg}
+              onMouseDown={beginIfNeeded}
+              onTouchStart={beginIfNeeded}
               onChange={(e) => handleSetAngle(parseFloat(e.target.value))}
+              onMouseUp={endInteraction}
+              onTouchEnd={endInteraction}
+              onBlur={endInteraction}
             />
           </label>
           <button
@@ -101,15 +128,21 @@ export default function PropertyPanel({ selectedItem, onChange, onDelete }) {
           <input
             type="number"
             value={Math.round(currentLength)}
+            onFocus={beginIfNeeded}
+            onBlur={endInteraction}
             onChange={(e) => {
+              beginIfNeeded();
               const newLen = parseFloat(e.target.value) || 1;
               const dx = (selectedItem.x2 - selectedItem.x1) / currentLength;
               const dy = (selectedItem.y2 - selectedItem.y1) / currentLength;
-              onChange({
-                ...selectedItem,
-                x2: selectedItem.x1 + dx * newLen,
-                y2: selectedItem.y1 + dy * newLen,
-              });
+              onChange(
+                {
+                  ...selectedItem,
+                  x2: selectedItem.x1 + dx * newLen,
+                  y2: selectedItem.y1 + dy * newLen,
+                },
+                { commit: false }
+              );
             }}
             style={inputStyle}
           />
@@ -123,6 +156,8 @@ export default function PropertyPanel({ selectedItem, onChange, onDelete }) {
         <input
           type="number"
           value={selectedItem.height || 250}
+          onFocus={beginIfNeeded}
+          onBlur={endInteraction}
           onChange={(e) => handleDimensionChange('height', e.target.value)}
           style={inputStyle}
         />
@@ -134,18 +169,30 @@ export default function PropertyPanel({ selectedItem, onChange, onDelete }) {
           <input
             type="number"
             value={selectedItem.bottomOffset || 0}
+            onFocus={beginIfNeeded}
+            onBlur={endInteraction}
             onChange={(e) => handleDimensionChange('bottomOffset', e.target.value)}
             style={inputStyle}
           />
         </label>
       )}
 
-      <button
-        onClick={() => onDelete(selectedItem.id)}
-        style={{ ...inputStyle, background: '#dc3545', color: '#fff', cursor: 'pointer', marginTop: '15px' }}
-      >
-        Delete Element
-      </button>
+      <div style={{ display: 'flex', gap: '8px', marginTop: '15px' }}>
+        <button
+          onClick={() => onDuplicate(selectedItem.id)}
+          title="Duplicate (Ctrl/Cmd+D)"
+          style={{ ...inputStyle, flex: 1, background: '#2f6f4f', color: '#fff', cursor: 'pointer' }}
+        >
+          Duplicate
+        </button>
+        <button
+          onClick={() => onDelete(selectedItem.id)}
+          title="Delete (Del)"
+          style={{ ...inputStyle, flex: 1, background: '#dc3545', color: '#fff', cursor: 'pointer' }}
+        >
+          Delete
+        </button>
+      </div>
     </div>
   );
 }

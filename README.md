@@ -23,6 +23,24 @@ This covers the full loop: **draw a floor plan → generate a 3D model → save 
 piece to build on top of this — the `design` object already has empty `interior` and `exterior`
 arrays ready for that.
 
+### Editor functionality added on top of the original scaffold
+
+- **Undo / Redo** — every wall/door/window/vent edit (draw, move, resize, rotate, delete,
+  duplicate) is undoable. Drags and rapid field edits collapse into a single undo step instead of
+  one per pixel/keystroke. Toolbar buttons + `Ctrl/Cmd+Z` and `Ctrl/Cmd+Shift+Z` (or `Ctrl+Y`).
+  See `frontend/src/hooks/useHistory.js`.
+- **Duplicate** — clone the selected element a short offset away, via the Property Panel's
+  "Duplicate" button or `Ctrl/Cmd+D`.
+- **Keyboard shortcuts** — `Delete`/`Backspace` deletes the selected element, `Escape` clears the
+  selection and returns to the Select tool (ignored while typing in a text field).
+- **Snap to grid** — toggle in the toolbar; new walls, dragged endpoints, and moved walls snap to
+  the 20px/1m grid in the 2D editor.
+- **Live length readout** — while drawing a wall in 2D, the in-progress length is shown in meters.
+- **Stats bar** — live count of walls/doors/windows/vents and total wall length under the canvas.
+- **Export PNG** — download the current 2D floor plan as a PNG image.
+- **Unsaved-changes protection** — the Save button shows a dirty indicator, and you're warned
+  before navigating back or closing the tab with unsaved edits.
+
 ## Running it locally
 
 You'll need [Node.js](https://nodejs.org) 18+ installed.
