@@ -11,8 +11,6 @@ const ELEMENT_COLORS_3D = {
 
 const SELECTED_COLOR = '#007bff';
 
-// Default size for a new door/window/vent placed by clicking on a wall in
-// the 3D view (mirrors the defaults the 2D editor sets for each tool).
 const TOOL_DEFAULTS = {
   door: { height: 210, bottomOffset: 0, width: 90 },
   window: { height: 120, bottomOffset: 90, width: 110 },
@@ -23,10 +21,6 @@ function wallWorldPoints(wall) {
   return { start: toWorld(wall.x1, wall.y1), end: toWorld(wall.x2, wall.y2) };
 }
 
-// Turns a wall + the openings that belong to it into a list of solid box
-// segments with the door/window/vent gaps cut out — a sill below each
-// opening (if it doesn't start at the floor) and a lintel/header above it
-// (if it doesn't reach the ceiling), plus the untouched wall on either side.
 function buildWallSegments(wall, openings) {
   const H = (wall.height || 250) * SCALE;
   const { start, end } = wallWorldPoints(wall);
@@ -133,11 +127,11 @@ function OpeningElement({ item, isSelected, onItemClick, onItemPointerDown }) {
     return (
       <group position={[cx, cy, cz]} rotation={[0, -angle, 0]} onClick={handleClick} onPointerDown={handlePointerDown}>
         <mesh>
-          <boxGeometry args={[wallLength, height, 0.15]} />
+          <boxGeometry args={[wallLength, height, 0.12]} />
           <meshStandardMaterial color={doorColor} roughness={0.3} />
         </mesh>
-        <mesh position={[wallLength * 0.35, 0, 0.1]}>
-          <sphereGeometry args={[0.08, 16, 16]} />
+        <mesh position={[wallLength * 0.35, 0, 0.08]}>
+          <sphereGeometry args={[0.07, 16, 16]} />
           <meshStandardMaterial color="#ffd700" metalness={0.8} />
         </mesh>
       </group>
@@ -149,11 +143,11 @@ function OpeningElement({ item, isSelected, onItemClick, onItemPointerDown }) {
     return (
       <group position={[cx, cy, cz]} rotation={[0, -angle, 0]} onClick={handleClick} onPointerDown={handlePointerDown}>
         <mesh>
-          <boxGeometry args={[wallLength, height, 0.12]} />
+          <boxGeometry args={[wallLength, height, 0.10]} />
           <meshStandardMaterial color={frameColor} />
         </mesh>
         <mesh>
-          <boxGeometry args={[wallLength * 0.9, height * 0.85, 0.05]} />
+          <boxGeometry args={[wallLength * 0.9, height * 0.85, 0.04]} />
           <meshStandardMaterial color="#87ceeb" transparent opacity={0.6} roughness={0.1} />
         </mesh>
       </group>
@@ -175,10 +169,7 @@ function OpeningElement({ item, isSelected, onItemClick, onItemPointerDown }) {
   return null;
 }
 
-// The floor. In 3D, the 'wall' tool works as two clicks: first click drops
-// a start marker, second click finishes the wall — since dragging on the
-// floor is how the camera orbits.
-function GroundPlane({ tool, pendingStart, onFloorClick }) {
+function GroundPlane({ onFloorClick }) {
   return (
     <mesh
       rotation={[-Math.PI / 2, 0, 0]}
@@ -194,11 +185,6 @@ function GroundPlane({ tool, pendingStart, onFloorClick }) {
   );
 }
 
-// Headless helper (lives inside <Canvas> so it can use useThree). While
-// `active`, listens on the window for pointer move/up and reports the
-// mouse's intersection with the y=0 ground plane — this is what lets a
-// drag keep tracking smoothly even once the pointer moves off the actual
-// wall/door mesh that started it, and avoids fighting with OrbitControls.
 function DragTracker({ active, onMove, onEnd }) {
   const { camera, gl } = useThree();
   const planeRef = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0));
@@ -247,11 +233,6 @@ export default function Scene3D({
   onSelect = () => {},
 }) {
   const [pendingStart, setPendingStart] = useState(null);
-
-  // --- Drag state (Select tool) ---
-  // dragSessionRef holds the armed drag's math (what's moving and how);
-  // draftWalls is the live preview shown while dragging, committed via
-  // onChange only once the drag ends (mirrors the 2D editor).
   const dragSessionRef = useRef(null);
   const [dragActive, setDragActive] = useState(false);
   const [draftWalls, setDraftWalls] = useState(null);
@@ -260,11 +241,9 @@ export default function Scene3D({
   const wallItems = useMemo(() => displayWalls.filter((w) => (w.type || 'wall') === 'wall'), [displayWalls]);
   const openingItems = useMemo(() => displayWalls.filter((w) => w.type && w.type !== 'wall'), [displayWalls]);
 
-  // Click on a wall: adds a door/window/vent at that spot, deletes on
-  // eraser, or just selects the wall otherwise.
   const handleWallClick = useCallback(
     (wall, point) => {
-      if (tool === 'door' || tool === 'window' || tool === 'vent') {
+      if (['door', 'window', 'vent'].includes(tool)) {
         const defaults = TOOL_DEFAULTS[tool];
         const start = toWorld(wall.x1, wall.y1);
         const end = toWorld(wall.x2, wall.y2);
@@ -319,8 +298,6 @@ export default function Scene3D({
     [tool, walls, onChange, onSelect, selectedId]
   );
 
-  // Arms a drag session for a wall: translating it, plus any door/window/
-  // vent cut into it, together — same behavior as the 2D editor.
   const handleWallPointerDown = useCallback(
     (wall) => {
       if (tool !== 'select') return;
@@ -336,24 +313,10 @@ export default function Scene3D({
     [tool, walls, onSelect]
   );
 
-  // Arms a drag session for a door/window/vent: if it's snapped to a wall,
-  // it slides along that wall's line; otherwise it translates freely.
   const handleItemPointerDown = useCallback(
     (item) => {
       if (tool !== 'select') return;
       onSelect(item.id);
-
-      if (item.wallId) {
-        const parentWall = walls.find((w) => w.id === item.wallId);
-        if (parentWall) {
-          const p1 = projectPointOnSegment(item.x1, item.y1, parentWall.x1, parentWall.y1, parentWall.x2, parentWall.y2);
-          const p2 = projectPointOnSegment(item.x2, item.y2, parentWall.x1, parentWall.y1, parentWall.x2, parentWall.y2);
-          const halfWidthU = Math.abs(p2.t - p1.t) / 2;
-          dragSessionRef.current = { mode: 'slide', id: item.id, wall: parentWall, halfWidthU };
-          setDragActive(true);
-          return;
-        }
-      }
 
       dragSessionRef.current = {
         mode: 'translate',
@@ -362,12 +325,9 @@ export default function Scene3D({
       };
       setDragActive(true);
     },
-    [tool, walls, onSelect]
+    [tool, onSelect]
   );
 
-  // Driven by DragTracker: point is the mouse ray's intersection with the
-  // ground plane, in 3D world units. Converted to plan coordinates so the
-  // math matches the 2D editor exactly.
   const handleDragMove = useCallback(
     (point3D) => {
       const session = dragSessionRef.current;
@@ -384,18 +344,6 @@ export default function Scene3D({
           return { ...w, x1: orig.x1 + dx, y1: orig.y1 + dy, x2: orig.x2 + dx, y2: orig.y2 + dy };
         });
         setDraftWalls(updated);
-      } else if (session.mode === 'slide') {
-        const wall = session.wall;
-        const proj = projectPointOnSegment(plan.x, plan.y, wall.x1, wall.y1, wall.x2, wall.y2);
-        const t = Math.max(session.halfWidthU, Math.min(1 - session.halfWidthU, proj.t));
-        const uStart = t - session.halfWidthU;
-        const uEnd = t + session.halfWidthU;
-        const nx1 = wall.x1 + uStart * (wall.x2 - wall.x1);
-        const ny1 = wall.y1 + uStart * (wall.y2 - wall.y1);
-        const nx2 = wall.x1 + uEnd * (wall.x2 - wall.x1);
-        const ny2 = wall.y1 + uEnd * (wall.y2 - wall.y1);
-        const updated = walls.map((w) => (w.id === session.id ? { ...w, x1: nx1, y1: ny1, x2: nx2, y2: ny2 } : w));
-        setDraftWalls(updated);
       }
     },
     [walls]
@@ -410,9 +358,6 @@ export default function Scene3D({
     setDraftWalls(null);
   }, [draftWalls, onChange]);
 
-  // Click on the floor: with the wall tool active, first click starts a
-  // new wall and the second click finishes it. Any other tool just clears
-  // the current selection.
   const handleFloorClick = useCallback(
     (point) => {
       if (tool !== 'wall') {
@@ -448,7 +393,7 @@ export default function Scene3D({
   const pendingMarker = pendingStart ? toWorld(pendingStart.x, pendingStart.y) : null;
 
   return (
-    <div style={{ width: '100%', height: '600px', background: '#1a1a1a' }}>
+    <div style={{ width: '100%', height: '100%', background: '#1a1a1a' }}>
       <Canvas camera={{ position: [0, 15, 25], fov: 50 }}>
         <ambientLight intensity={0.7} />
         <directionalLight position={[10, 20, 15]} intensity={1.2} />
@@ -456,8 +401,7 @@ export default function Scene3D({
 
         <DragTracker active={dragActive} onMove={handleDragMove} onEnd={handleDragEnd} />
 
-        {/* Floor Plane */}
-        <GroundPlane tool={tool} pendingStart={pendingStart} onFloorClick={handleFloorClick} />
+        <GroundPlane onFloorClick={handleFloorClick} />
 
         <gridHelper args={[50, 50, '#007bff', '#555555']} position={[0, 0.01, 0]} />
 
@@ -468,7 +412,6 @@ export default function Scene3D({
           </mesh>
         )}
 
-        {/* Walls, rendered with real cut-out openings */}
         {wallItems.map((wall) => (
           <Wall3D
             key={wall.id}
@@ -480,7 +423,6 @@ export default function Scene3D({
           />
         ))}
 
-        {/* Doors/windows/vents that aren't tied to a wall (legacy / unsnapped) */}
         {openingItems.map((item) => (
           <OpeningElement
             key={item.id}
