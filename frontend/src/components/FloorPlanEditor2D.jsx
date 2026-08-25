@@ -1,6 +1,14 @@
 import React, { useRef, useState, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
-import { distanceToSegment, projectPointOnSegment, SCALE } from '../utils/geometry.js';
+import {
+  distanceToSegment,
+  distanceToWallPath,
+  projectPointOnSegment,
+  curveControlPoint,
+  wallCurveMidpoint,
+  SCALE,
+} from '../utils/geometry.js';
 import { getOpeningDefaults } from '../utils/openings.js';
+import { createPillar } from '../utils/elements.js';
 
 const COLOR_MAP = {
   wall: '#ffffff',
@@ -10,6 +18,7 @@ const COLOR_MAP = {
 };
 
 const GRID_SIZE = 20;
+const BULGE_HANDLE_COLOR = '#ffaa00';
 
 function snap(value, enabled) {
   return enabled ? Math.round(value / GRID_SIZE) * GRID_SIZE : value;
@@ -17,8 +26,11 @@ function snap(value, enabled) {
 
 const FloorPlanEditor2D = forwardRef(function FloorPlanEditor2D(
   {
-    walls = [],
+    elements = [],
     tool = 'select',
+    curvedMode = false,
+    activeFloorId = null,
+    wallHeight = 250,
     onChange = () => {},
     onBeginInteraction = () => {},
     selectedId = null,
@@ -77,12 +89,21 @@ const FloorPlanEditor2D = forwardRef(function FloorPlanEditor2D(
       ctx.stroke();
     }
 
-    // Draw elements
-    walls.forEach((item) => {
+    // Draw walls/doors/windows/vents (segment-based elements)
+    elements.forEach((item) => {
+      if (item.type === 'pillar') return; // drawn separately, on top
       const isSelected = item.id === selectedId;
+      const isCurved = (item.type || 'wall') === 'wall' && item.curved && item.bow;
+
       ctx.beginPath();
-      ctx.moveTo(item.x1, item.y1);
-      ctx.lineTo(item.x2, item.y2);
+      if (isCurved) {
+        const { x: cx, y: cy } = curveControlPoint(item.x1, item.y1, item.x2, item.y2, item.bow);
+        ctx.moveTo(item.x1, item.y1);
+        ctx.quadraticCurveTo(cx, cy, item.x2, item.y2);
+      } else {
+        ctx.moveTo(item.x1, item.y1);
+        ctx.lineTo(item.x2, item.y2);
+      }
       ctx.strokeStyle = isSelected ? '#007bff' : COLOR_MAP[item.type || 'wall'] || '#ffffff';
       ctx.lineWidth = isSelected ? 8 : item.lineWidth || 6;
       ctx.lineCap = 'round';
@@ -100,8 +121,35 @@ const FloorPlanEditor2D = forwardRef(function FloorPlanEditor2D(
         ctx.beginPath();
         ctx.arc(item.x2, item.y2, 6, 0, Math.PI * 2);
         ctx.fill();
+
+        // Bulge handle (curved walls only) -- drag to bend the wall
+        if ((item.type || 'wall') === 'wall') {
+          const mid = wallCurveMidpoint(item);
+          ctx.fillStyle = BULGE_HANDLE_COLOR;
+          ctx.beginPath();
+          ctx.arc(mid.x, mid.y, 6, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     });
+
+    // Draw pillars on top of walls
+    elements
+      .filter((item) => item.type === 'pillar')
+      .forEach((p) => {
+        const isSelected = p.id === selectedId;
+        ctx.beginPath();
+        if (p.shape === 'square') {
+          ctx.rect(p.x - p.radius, p.y - p.radius, p.radius * 2, p.radius * 2);
+        } else {
+          ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        }
+        ctx.fillStyle = isSelected ? '#007bff' : '#a3a3a3';
+        ctx.fill();
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
 
     // Draw active creation preview line + live length readout
     if (drawingStart && tool === 'wall') {
@@ -128,7 +176,19 @@ const FloorPlanEditor2D = forwardRef(function FloorPlanEditor2D(
       ctx.fillStyle = '#00ffcc';
       ctx.fillText(label, midX - textWidth / 2, midY - 8);
     }
-  }, [walls, selectedId, drawingStart, mousePos, tool, snapEnabled]);
+
+    // Pillar placement preview (follows cursor)
+    if (tool === 'pillar') {
+      const px = snap(mousePos.x, snapEnabled);
+      const py = snap(mousePos.y, snapEnabled);
+      ctx.beginPath();
+      ctx.arc(px, py, 15, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(0,123,255,0.8)';
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }, [elements, selectedId, drawingStart, mousePos, tool, snapEnabled]);
 
   useEffect(() => {
     drawCanvas();
@@ -139,30 +199,52 @@ const FloorPlanEditor2D = forwardRef(function FloorPlanEditor2D(
     interactionCheckpointRef.current = false;
 
     if (tool === 'select') {
-      const selectedItem = walls.find((w) => w.id === selectedId);
+      const selectedItem = elements.find((w) => w.id === selectedId);
 
       if (selectedItem) {
-        if (Math.hypot(coords.x - selectedItem.x1, coords.y - selectedItem.y1) < 12) {
-          setDragState({ mode: 'handle', handle: 'p1', id: selectedItem.id });
-          return;
-        }
-        if (Math.hypot(coords.x - selectedItem.x2, coords.y - selectedItem.y2) < 12) {
-          setDragState({ mode: 'handle', handle: 'p2', id: selectedItem.id });
-          return;
+        if (selectedItem.type === 'pillar') {
+          if (Math.hypot(coords.x - selectedItem.x, coords.y - selectedItem.y) < selectedItem.radius + 8) {
+            setDragState({ mode: 'movePillar', id: selectedItem.id });
+            return;
+          }
+        } else {
+          if (Math.hypot(coords.x - selectedItem.x1, coords.y - selectedItem.y1) < 12) {
+            setDragState({ mode: 'handle', handle: 'p1', id: selectedItem.id });
+            return;
+          }
+          if (Math.hypot(coords.x - selectedItem.x2, coords.y - selectedItem.y2) < 12) {
+            setDragState({ mode: 'handle', handle: 'p2', id: selectedItem.id });
+            return;
+          }
+          if ((selectedItem.type || 'wall') === 'wall') {
+            const mid = wallCurveMidpoint(selectedItem);
+            if (Math.hypot(coords.x - mid.x, coords.y - mid.y) < 12) {
+              setDragState({ mode: 'bulge', id: selectedItem.id });
+              return;
+            }
+          }
         }
       }
 
-      const clicked = walls.find((w) => distanceToSegment(coords.x, coords.y, w.x1, w.y1, w.x2, w.y2) < 10);
+      const clickedPillar = elements.find(
+        (w) => w.type === 'pillar' && Math.hypot(coords.x - w.x, coords.y - w.y) < w.radius + 4
+      );
+      const clicked =
+        clickedPillar || elements.find((w) => w.type !== 'pillar' && distanceToWallPath(coords.x, coords.y, w) < 10);
 
       if (clicked) {
         onSelect(clicked.id);
-        setDragState({
-          mode: 'move',
-          id: clicked.id,
-          startX: coords.x,
-          startY: coords.y,
-          orig: { ...clicked },
-        });
+        if (clicked.type === 'pillar') {
+          setDragState({ mode: 'movePillar', id: clicked.id });
+        } else {
+          setDragState({
+            mode: 'move',
+            id: clicked.id,
+            startX: coords.x,
+            startY: coords.y,
+            orig: { ...clicked },
+          });
+        }
       } else {
         onSelect(null);
       }
@@ -177,16 +259,28 @@ const FloorPlanEditor2D = forwardRef(function FloorPlanEditor2D(
         const newWall = {
           id: Date.now().toString(),
           type: 'wall',
+          floorId: activeFloorId,
           x1: drawingStart.x,
           y1: drawingStart.y,
           x2: snapped.x,
           y2: snapped.y,
-          height: 250,
+          height: wallHeight,
           bottomOffset: 0,
+          curved: curvedMode,
+          bow: 0,
         };
-        onChange([...walls, newWall]);
+        onChange([...elements, newWall]);
+        onSelect(newWall.id);
         setDrawingStart(null);
       }
+      return;
+    }
+
+    if (tool === 'pillar') {
+      const snapped = { x: snap(coords.x, snapEnabled), y: snap(coords.y, snapEnabled) };
+      const newPillar = createPillar(snapped.x, snapped.y, activeFloorId, wallHeight);
+      onChange([...elements, newPillar]);
+      onSelect(newPillar.id);
       return;
     }
 
@@ -194,9 +288,11 @@ const FloorPlanEditor2D = forwardRef(function FloorPlanEditor2D(
       const defaults = getOpeningDefaults(tool);
       const half = defaults.width / 2;
 
-      // Find nearest wall to align angle automatically
-      const nearestWall = walls
-        .filter((w) => (w.type || 'wall') === 'wall')
+      // Find nearest wall to align angle automatically. Curved walls are
+      // skipped here -- opening placement/anchoring assumes a straight
+      // chord, so openings can only be attached to straight walls.
+      const nearestWall = elements
+        .filter((w) => (w.type || 'wall') === 'wall' && !(w.curved && w.bow))
         .map((w) => ({
           wall: w,
           proj: projectPointOnSegment(coords.x, coords.y, w.x1, w.y1, w.x2, w.y2),
@@ -223,6 +319,7 @@ const FloorPlanEditor2D = forwardRef(function FloorPlanEditor2D(
       const newItem = {
         id: Date.now().toString(),
         type: tool,
+        floorId: activeFloorId,
         wallId,
         x1: anchorX - dx,
         y1: anchorY - dy,
@@ -235,7 +332,7 @@ const FloorPlanEditor2D = forwardRef(function FloorPlanEditor2D(
         bottomOffset: defaults.bottomOffset,
       };
 
-      onChange([...walls, newItem]);
+      onChange([...elements, newItem]);
       onSelect(newItem.id);
     }
   };
@@ -257,7 +354,7 @@ const FloorPlanEditor2D = forwardRef(function FloorPlanEditor2D(
       const sx = snap(coords.x, snapEnabled);
       const sy = snap(coords.y, snapEnabled);
       onChange(
-        walls.map((w) => {
+        elements.map((w) => {
           if (w.id !== dragState.id) return w;
           if (dragState.handle === 'p1') {
             return { ...w, x1: sx, y1: sy };
@@ -265,6 +362,32 @@ const FloorPlanEditor2D = forwardRef(function FloorPlanEditor2D(
             return { ...w, x2: sx, y2: sy };
           }
         }),
+        { commit: false }
+      );
+    } else if (dragState.mode === 'bulge') {
+      onChange(
+        elements.map((w) => {
+          if (w.id !== dragState.id) return w;
+          const mx = (w.x1 + w.x2) / 2;
+          const my = (w.y1 + w.y2) / 2;
+          const dx = w.x2 - w.x1;
+          const dy = w.y2 - w.y1;
+          const len = Math.hypot(dx, dy) || 1;
+          const nx = -dy / len;
+          const ny = dx / len;
+          // Signed distance of the cursor from the chord, along the
+          // chord's perpendicular -- this becomes the new bow.
+          let newBow = (coords.x - mx) * nx + (coords.y - my) * ny;
+          if (snapEnabled) newBow = Math.round(newBow / GRID_SIZE) * GRID_SIZE;
+          return { ...w, curved: true, bow: newBow };
+        }),
+        { commit: false }
+      );
+    } else if (dragState.mode === 'movePillar') {
+      const sx = snap(coords.x, snapEnabled);
+      const sy = snap(coords.y, snapEnabled);
+      onChange(
+        elements.map((w) => (w.id === dragState.id ? { ...w, x: sx, y: sy } : w)),
         { commit: false }
       );
     } else if (dragState.mode === 'move') {
@@ -277,7 +400,7 @@ const FloorPlanEditor2D = forwardRef(function FloorPlanEditor2D(
         dy = snappedY1 - dragState.orig.y1;
       }
       onChange(
-        walls.map((w) => {
+        elements.map((w) => {
           if (w.id !== dragState.id) return w;
           return {
             ...w,
